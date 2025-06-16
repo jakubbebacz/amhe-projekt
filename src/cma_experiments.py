@@ -41,8 +41,6 @@ FUNCTIONS = {
 def run_cma_es(
     func, dim, init_sigma, init_ps_random, base_seed, generator_name, max_evals, tol
 ):
-    # Recreate aligned RNGs per run for reproducibility
-    # RNG for CMA-ES (controls ask/tell sampling)
     es_rng = {"seed": base_seed, "verb_log": 0, "verb_disp": 0}
     x0 = np.zeros(dim)
     es = cma.CMAEvolutionStrategy(x0, init_sigma, es_rng)
@@ -141,11 +139,8 @@ def analyze_results(df, alpha=0.05):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="CMA-ES experiment with random ps init"
-    )
-    parser.add_argument("--output", type=str, default="results.csv")
-    parser.add_argument("--runs", type=int, default=30)
+    parser = argparse.ArgumentParser(description="CMA-ES experiment containerized")
+    parser.add_argument("runs", type=int, help="Number of runs per combination")
     args = parser.parse_args()
 
     dims = [2, 10, 30]
@@ -154,7 +149,7 @@ if __name__ == "__main__":
     tol = 1e-8
 
     df = run_experiments(
-        output_csv=args.output,
+        output_csv="data/results.csv",
         functions=FUNCTIONS,
         dims=dims,
         num_runs=args.runs,
@@ -164,5 +159,4 @@ if __name__ == "__main__":
     )
 
     summary = analyze_results(df)
-    print("Summary of statistical tests:")
-    print(summary)
+    summary.to_csv("data/summary.csv", index=False)
