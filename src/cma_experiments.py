@@ -1,17 +1,15 @@
 import argparse
 import os
 import time
+from typing import Callable, Dict, List
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
-
-# zamieniamy cma na cmaes
 from cmaes import CMA
 from scipy.stats import wilcoxon
 
-# Ustawienie stylu wykresów
 sns.set_theme(style="whitegrid")
 plt.rcParams.update(
     {
@@ -24,81 +22,86 @@ plt.rcParams.update(
 )
 
 
-# benchmark functions (bez zmian)
-def rosenbrock(x):
+def rosenbrock(x: np.ndarray) -> float:
     return np.sum(100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (x[:-1] - 1.0) ** 2)
 
 
-def rastrigin(x):
+def rastrigin(x: np.ndarray) -> float:
     n = x.size
     return 10.0 * n + np.sum(x**2 - 10.0 * np.cos(2 * np.pi * x))
 
 
-def ackley(x, a=20, b=0.2, c=2 * np.pi):
+def ackley(x: np.ndarray, a=20, b=0.2, c=2 * np.pi) -> float:
     n = x.size
     term1 = -a * np.exp(-b * np.sqrt(np.sum(x**2) / n))
     term2 = -np.exp(np.sum(np.cos(c * x)) / n)
-    return term1 + term2 + a + np.e
+    return float(term1 + term2 + a + np.e)
 
 
-def schwefel(x):
+def schwefel(x: np.ndarray) -> float:
     n = x.size
     return 418.9829 * n - np.sum(x * np.sin(np.sqrt(np.abs(x))))
 
 
-FUNCTIONS = {
+FUNCTIONS: Dict[str, Callable[[np.ndarray], float]] = {
     "rosenbrock": rosenbrock,
     "rastrigin": rastrigin,
     "ackley": ackley,
     "schwefel": schwefel,
 }
 
+OPTIMUM_VALUES = {
+    "rosenbrock": 0,
+    "rastrigin": 0,
+    "ackley": 0,
+    "schwefel": 0,
+}
+
 
 def run_cma_es(
-    func, dim, init_sigma, init_ps_random, base_seed, generator_name, max_evals, tol
+    func,
+    func_name,
+    dim,
+    init_sigma,
+    init_ps_random,
+    base_seed,
+    generator_name,
+    max_evals,
+    tol,
+    num_runs,
 ):
-    # Inicjalizacja algorytmu
-    es = CMA(mean=np.zeros(dim), sigma=init_sigma, seed=base_seed)
+    if generator_name == "mersenne":
+        cma_seed = base_seed
+        ps_rng = np.random.RandomState(base_seed + num_runs)
+        randn_for_ps = ps_rng.randn
+    else:
+        seeder = np.random.PCG64(base_seed)
+        cma_seed = seeder.spawn(1)[0]
+        ps_rng = np.random.Generator(seeder.spawn(1)[0])
+        randn_for_ps = ps_rng.standard_normal
+
+    es = CMA(mean=np.zeros(dim), sigma=init_sigma, seed=cma_seed)
     popsize = es._popsize
 
-    # Losowa inicjalizacja p_sigma
-    if generator_name == "mersenne":
-        rng = np.random.RandomState(base_seed)  # klasyczny Mersenne Twister
-        randn = rng.randn  # zgodny z API: zwraca np.ndarray
-    else:
-        rng = np.random.Generator(np.random.PCG64(base_seed))  # nowoczesny PCG64
-        randn = rng.standard_normal
-
-    # Losowa inicjalizacja ścieżki ewolucyjnej (p_sigma)
     if init_ps_random:
-        es._p_sigma = randn(dim).astype(np.float64)
+        es._p_sigma = randn_for_ps(dim).astype(np.float64)
 
-    # Wartość optimum
-    optimum = {
-        "rosenbrock": 0,
-        "rastrigin": 0,
-        "ackley": 0,
-        "schwefel": 418.9829 * dim,
-    }.get(func.__name__, 0)
+    optimum = OPTIMUM_VALUES.get(func_name, 0)
 
     evals = 0
     best_fitness = float("inf")
     history = []
-
     while not es.should_stop() and evals < max_evals:
-        # Generowanie populacji
         solutions = [es.ask() for _ in range(popsize)]
-
-        # Ewaluacja populacji
         evaluated = [(x, func(x)) for x in solutions]
         fitnesses = [f for (_, f) in evaluated]
-
-        # Aktualizacja algorytmu
         es.tell(evaluated)
 
-        # Statystyki
         evals += popsize
-        best_fitness = min(best_fitness, min(fitnesses))
+        current_best = min(fitnesses)
+        if current_best < best_fitness:
+            best_fitness = current_best
+
         history.append({"evals": evals, "best_fitness": best_fitness})
 
         if abs(best_fitness - optimum) <= tol:
@@ -112,7 +115,10 @@ def run_cma_es(
     }
 
 
-def run_experiments(output_csv, functions, dims, num_runs, init_sigma, max_evals, tol):
+def run_experiments(
+    output_dir: str, functions: Dict, dims: List[int], num_runs: int, **kwargs
+):
+    os.makedirs(output_dir, exist_ok=True)
     records = []
     history_data = []
     generator_names = ["mersenne", "pcg"]
@@ -122,17 +128,20 @@ def run_experiments(output_csv, functions, dims, num_runs, init_sigma, max_evals
         for version_name, init_ps_random in versions.items():
             for func_name, func in functions.items():
                 for dim in dims:
+                    print(
+                        f"Running: {generator_name}/{version_name}/{func_name}/dim={dim}..."
+                    )
                     for seed in range(num_runs):
                         start = time.time()
                         res = run_cma_es(
-                            func,
-                            dim,
-                            init_sigma,
-                            init_ps_random,
-                            seed,
-                            generator_name,
-                            max_evals,
-                            tol,
+                            func=func,
+                            func_name=func_name,
+                            dim=dim,
+                            init_ps_random=init_ps_random,
+                            base_seed=seed,
+                            generator_name=generator_name,
+                            num_runs=num_runs,  # <<< POPRAWKA
+                            **kwargs,
                         )
                         end = time.time()
                         records.append(
@@ -160,15 +169,15 @@ def run_experiments(output_csv, functions, dims, num_runs, init_sigma, max_evals
                             )
 
     df = pd.DataFrame.from_records(records)
-    df.to_csv(output_csv, index=False)
     history_df = pd.DataFrame.from_records(history_data)
-    history_csv = os.path.splitext(output_csv)[0] + "_history.csv"
-    history_df.to_csv(history_csv, index=False)
+
+    df.to_csv(f"{output_dir}/results.csv", index=False)
+    history_df.to_csv(f"{output_dir}/history.csv", index=False)
+
     return df, history_df
 
 
-# stats
-def analyze_results(df, alpha=0.05):
+def analyze_results(df: pd.DataFrame, alpha: float = 0.05) -> pd.DataFrame:
     summary = []
     for func_name in df["function"].unique():
         for gen_name in df["generator"].unique():
@@ -179,14 +188,15 @@ def analyze_results(df, alpha=0.05):
                     & (df["dim"] == dim)
                 ]
                 pivot = df_sub.pivot(index="seed", columns="version", values="evals")
-
-                # Handle cases where all values are identical
+                if "standard" not in pivot.columns or "random" not in pivot.columns:
+                    continue
                 if (pivot["standard"] == pivot["random"]).all():
-                    stat = 0.0
-                    p = np.nan
+                    stat, p = 0.0, 1.0
                 else:
-                    stat, p = wilcoxon(pivot["standard"], pivot["random"])
-
+                    try:
+                        stat, p = wilcoxon(pivot["standard"], pivot["random"])
+                    except ValueError:
+                        stat, p = 0.0, 1.0
                 summary.append(
                     {
                         "function": func_name,
@@ -200,112 +210,53 @@ def analyze_results(df, alpha=0.05):
     return pd.DataFrame(summary)
 
 
-# Plotting functions
-def plot_convergence(history_df, output_dir="plots"):
+def plot_convergence(history_df: pd.DataFrame, output_dir: str = "plots"):
     os.makedirs(output_dir, exist_ok=True)
-
     for func_name in history_df["function"].unique():
-        plt.figure(figsize=(10, 6))
         func_df = history_df[history_df["function"] == func_name]
-
-        agg_df = (
-            func_df.groupby(["dim", "version", "evals"])["best_fitness"]
-            .agg(
-                [
-                    "median",
-                    lambda x: np.quantile(x, 0.25),
-                    lambda x: np.quantile(x, 0.75),
-                ]
-            )
-            .reset_index()
+        dims = sorted(func_df["dim"].unique())
+        ncols = len(dims)
+        fig, axes = plt.subplots(
+            1, ncols, figsize=(5 * ncols, 5), sharey=True, squeeze=False
         )
-        agg_df.columns = ["dim", "version", "evals", "median", "q25", "q75"]
-
-        # subplots for each dimension
-        dims = sorted(agg_df["dim"].unique())
-        fig, axes = plt.subplots(1, len(dims), figsize=(15, 5), sharey=True)
+        axes = axes.flatten()
         fig.suptitle(f"Konwergencja dla funkcji {func_name.capitalize()}", fontsize=16)
-
-        if len(dims) == 1:
-            axes = [axes]
-
         for i, dim in enumerate(dims):
             ax = axes[i]
-            dim_df = agg_df[agg_df["dim"] == dim]
-
-            for version, color in zip(["standard", "random"], ["#1f77b4", "#ff7f0e"]):
-                version_df = dim_df[dim_df["version"] == version]
-                ax.plot(
-                    version_df["evals"],
-                    version_df["median"],
-                    label=f"Inicjalizacja {'losowa' if version == 'random' else 'zerowa'}",
-                    color=color,
-                )
-                ax.fill_between(
-                    version_df["evals"],
-                    version_df["q25"],
-                    version_df["q75"],
-                    alpha=0.2,
-                    color=color,
-                )
-
+            dim_df = func_df[func_df["dim"] == dim]
+            sns.lineplot(
+                data=dim_df,
+                x="evals",
+                y="best_fitness",
+                hue="version",
+                style="generator",
+                estimator="median",
+                errorbar=("pi", 50),
+                ax=ax,
+            )
             ax.set_title(f"Wymiar = {dim}")
             ax.set_xlabel("Liczba ewaluacji funkcji")
             ax.set_yscale("log")
             ax.grid(True, which="both", ls="-", alpha=0.2)
             if i == 0:
-                ax.set_ylabel("Najlepsza wartość funkcji")
-            ax.legend()
+                ax.set_ylabel("Najlepsza wartość funkcji (mediana)")
+            handles, labels = ax.get_legend_handles_labels()
+            label_map = {
+                "version": "Wersja",
+                "standard": "Zerowa",
+                "random": "Losowa",
+                "generator": "Generator",
+                "mersenne": "Mersenne",
+                "pcg": "PCG64",
+            }
+            new_labels = [label_map.get(l, l.capitalize()) for l in labels]
+            from collections import OrderedDict
 
-        plt.tight_layout(rect=[0, 0, 1, 0.95])
+            handles_labels = OrderedDict(zip(new_labels, handles))
+            ax.legend(handles_labels.values(), handles_labels.keys())
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig(f"{output_dir}/convergence_{func_name}.png")
         plt.close()
-
-
-def plot_summary(summary_df, output_dir="plots"):
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Prepare data for plotting
-    plot_df = summary_df.copy()
-    plot_df["dim"] = plot_df["dim"].astype(str)
-    plot_df["significant"] = plot_df["significant"].map({True: "Tak", False: "Nie"})
-
-    # Create plot
-    plt.figure(figsize=(12, 8))
-    ax = sns.scatterplot(
-        data=plot_df,
-        x="dim",
-        y="function",
-        hue="significant",
-        style="generator",
-        s=200,
-        palette={"Tak": "red", "Nie": "green"},
-    )
-
-    # Add p-value annotations
-    for i, row in plot_df.iterrows():
-        p_text = f"p={row['p_value']:.3f}" if not np.isnan(row["p_value"]) else "p=NaN"
-        ax.text(
-            row["dim"],
-            row["function"],
-            p_text,
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="black",
-            bbox=dict(
-                facecolor="white", alpha=0.7, edgecolor="none", boxstyle="round,pad=0.2"
-            ),
-        )
-
-    plt.title("Istotność statystyczna różnic między wersjami algorytmu", fontsize=16)
-    plt.xlabel("Wymiar problemu")
-    plt.ylabel("Funkcja testowa")
-    plt.legend(title="Istotna różnica", bbox_to_anchor=(1.05, 1), loc="upper left")
-
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/statistical_significance.png")
-    plt.close()
 
 
 if __name__ == "__main__":
@@ -313,25 +264,23 @@ if __name__ == "__main__":
     parser.add_argument("runs", type=int, help="Number of runs per combination")
     args = parser.parse_args()
 
-    dims = [2, 10, 30]
-    init_sigma = 0.3
-    max_evals = 10000
-    tol = 1e-7
+    exp_params = {
+        "init_sigma": 0.3,
+        "max_evals": 10000,
+        "tol": 1e-7,
+    }
 
     df, history_df = run_experiments(
-        output_csv="data/results.csv",
+        output_dir="data",
         functions=FUNCTIONS,
-        dims=dims,
+        dims=[2, 10, 30],
         num_runs=args.runs,
-        init_sigma=init_sigma,
-        max_evals=max_evals,
-        tol=tol,
+        **exp_params,
     )
 
     summary = analyze_results(df)
     summary.to_csv("data/summary.csv", index=False)
 
     plot_convergence(history_df, "plots")
-    plot_summary(summary, "plots")
 
-    print("Eksperyment zakończony. Wyniki i wykresy zapisane.")
+    print("Eksperyment zakończony.")
